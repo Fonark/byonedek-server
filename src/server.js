@@ -74,12 +74,13 @@ const MONGODB_URI =
 async function connectDB() {
   try {
     await mongoose.connect(MONGODB_URI, {
-      serverSelectionTimeoutMS: 5000,
+      serverSelectionTimeoutMS: 8000,
     });
-    console.log('[DB] Connected to MongoDB:', MONGODB_URI);
+    console.log('[DB] Connected to MongoDB');
   } catch (err) {
-    console.error('[DB] MongoDB connection failed:', err.message);
-    process.exit(1);
+    console.error('[DB] MongoDB connection error:', err.message);
+    console.log('[DB] Retrying connection in 5s...');
+    setTimeout(connectDB, 5000);
   }
 }
 
@@ -90,8 +91,13 @@ initSocketHandler(io);
 const PORT = parseInt(process.env.PORT || '5000', 10);
 
 async function start() {
-  await connectDB();
   httpServer.listen(PORT, '0.0.0.0', () => {
+    console.log(
+      `[SERVER] Running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`
+    );
+  });
+  connectDB();
+}
     console.log(
       `[SERVER] Running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`
     );
