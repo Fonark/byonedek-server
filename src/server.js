@@ -91,7 +91,7 @@ const PORT = parseInt(process.env.PORT || '5000', 10);
 
 async function start() {
   await connectDB();
-  httpServer.listen(PORT, () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(
       `[SERVER] Running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`
     );
