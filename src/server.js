@@ -98,11 +98,6 @@ async function start() {
   });
   connectDB();
 }
-    console.log(
-      `[SERVER] Running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`
-    );
-  });
-}
 
 start().catch((err) => {
   console.error('[STARTUP] Fatal error:', err);
