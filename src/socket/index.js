@@ -34,7 +34,7 @@ export function clearTurnTimeout(lobbyId) {
 export function scheduleTurnTimeout(io, lobbyId, game) {
   clearTurnTimeout(lobbyId);
 
-  if (!game || game.gameStatus !== 'playing') return;
+  if (!game || (game.gameStatus !== 'active' && game.gameStatus !== 'playing')) return;
 
   const activeColor = game.activeColor; // 'w' or 'b'
   let remainingMs = activeColor === 'w' ? game.whiteRemainingTime : game.blackRemainingTime;
@@ -454,10 +454,14 @@ export function initSocketHandler(io) {
 
         if (gameEnded) {
           clearTurnTimeout(session.lobbyId);
+          await Lobby.findOneAndUpdate({ lobbyId: session.lobbyId }, { status: 'completed' });
           io.to(session.lobbyId).emit('game-over', {
             winner: game.result?.winner,
             condition: game.result?.condition,
-            result: game.result,
+            result: {
+              winner: game.result?.winner,
+              condition: game.result?.condition,
+            },
             game: sanitizeGame(game),
           });
         } else {
@@ -651,7 +655,7 @@ export function initSocketHandler(io) {
         if (!lobbyId || !gameId) return;
 
         const game = await gameService.getGame(gameId);
-        if (!game || game.gameStatus !== 'playing') return;
+        if (!game || (game.gameStatus !== 'active' && game.gameStatus !== 'playing')) return;
 
         const activeColor = game.activeColor;
         const losingColor = activeColor === 'w' ? 'white' : 'black';
