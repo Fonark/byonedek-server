@@ -65,6 +65,7 @@ async function triggerTimeout(io, lobbyId, gameId, losingColor) {
   clearTurnTimeout(lobbyId);
   try {
     const updatedGame = await gameService.handleTimeout(gameId, losingColor);
+    await Lobby.findOneAndUpdate({ lobbyId }, { status: 'completed' });
     io.to(lobbyId).emit('game-over', {
       winner: updatedGame.result?.winner,
       condition: 'timeout',
@@ -488,8 +489,11 @@ export function initSocketHandler(io) {
           session.gameId || data?.gameId,
           session.color
         );
+        await Lobby.findOneAndUpdate({ lobbyId: session.lobbyId }, { status: 'completed' });
 
         io.to(session.lobbyId).emit('game-over', {
+          winner: game.result?.winner,
+          condition: game.result?.condition,
           result: game.result,
           game: sanitizeGame(game),
         });
@@ -528,8 +532,11 @@ export function initSocketHandler(io) {
 
         clearTurnTimeout(session.lobbyId);
         const game = await gameService.acceptDraw(session.gameId || data?.gameId);
+        await Lobby.findOneAndUpdate({ lobbyId: session.lobbyId }, { status: 'completed' });
 
         io.to(session.lobbyId).emit('game-over', {
+          winner: game.result?.winner,
+          condition: game.result?.condition,
           result: game.result,
           game: sanitizeGame(game),
         });
@@ -701,16 +708,19 @@ export function initSocketHandler(io) {
             if (!lobby) return;
 
             const game = await gameService.getGameByLobbyId(lobbyId);
-            if (game && game.gameStatus === 'active') {
+            if (game && (game.gameStatus === 'active' || game.gameStatus === 'playing')) {
               // Forfeit the disconnected player
               const updatedGame = await gameService.resignGame(game.gameId, color);
+              await Lobby.findOneAndUpdate({ lobbyId }, { status: 'completed' });
               io.to(lobbyId).emit('game-over', {
+                winner: updatedGame.result?.winner,
+                condition: updatedGame.result?.condition,
                 result: { ...updatedGame.result, reason: 'disconnect' },
                 game: sanitizeGame(updatedGame),
               });
+            } else {
+              await Lobby.findOneAndUpdate({ lobbyId }, { status: 'abandoned' });
             }
-
-            await Lobby.findOneAndUpdate({ lobbyId }, { status: 'abandoned' });
           } catch (err) {
             console.error('[SOCKET] disconnect cleanup error:', err);
           }

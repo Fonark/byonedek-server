@@ -217,7 +217,7 @@ export async function processMove({ gameId, move, playerColor, increment = 0 }) 
 export async function resignGame(gameId, playerColor) {
   const winner = playerColor === 'white' ? 'black' : 'white';
   const game = await Game.findOneAndUpdate(
-    { gameId },
+    { gameId, gameStatus: { $in: ['active', 'waiting'] } },
     {
       gameStatus: 'completed',
       result: { winner, condition: 'resignation' },
@@ -225,7 +225,7 @@ export async function resignGame(gameId, playerColor) {
     },
     { new: true }
   );
-  if (!game) throw Object.assign(new Error('Game not found'), { status: 404 });
+  if (!game) return Game.findOne({ gameId });
   return game;
 }
 
@@ -240,7 +240,7 @@ export async function resignGame(gameId, playerColor) {
 export async function handleTimeout(gameId, losingColor) {
   const winner = losingColor === 'white' ? 'black' : 'white';
   const game = await Game.findOneAndUpdate(
-    { gameId },
+    { gameId, gameStatus: { $in: ['active', 'waiting'] } },
     {
       gameStatus: 'completed',
       result: { winner, condition: 'timeout' },
@@ -248,7 +248,7 @@ export async function handleTimeout(gameId, losingColor) {
     },
     { new: true }
   );
-  if (!game) throw Object.assign(new Error('Game not found'), { status: 404 });
+  if (!game) return Game.findOne({ gameId });
   return game;
 }
 
@@ -277,7 +277,7 @@ export async function offerDraw(gameId, playerColor) {
  */
 export async function acceptDraw(gameId) {
   const game = await Game.findOneAndUpdate(
-    { gameId },
+    { gameId, gameStatus: { $in: ['active', 'waiting'] } },
     {
       gameStatus: 'completed',
       result: { winner: 'draw', condition: 'draw-agreement' },
@@ -286,7 +286,7 @@ export async function acceptDraw(gameId) {
     },
     { new: true }
   );
-  if (!game) throw Object.assign(new Error('Game not found'), { status: 404 });
+  if (!game) return Game.findOne({ gameId });
   return game;
 }
 

@@ -47,13 +47,10 @@ export function getGameStatus(chess) {
   const isStalemate = chess.isStalemate();
   const isInsufficientMaterial = chess.isInsufficientMaterial();
   const isThreefoldRepetition = chess.isThreefoldRepetition();
-  // chess.js v1 exposes isDraw() which covers stalemate, insufficient material,
-  // threefold repetition and the fifty-move rule.
+  const isFiftyMoveRule = typeof chess.isDrawByFiftyMoves === 'function'
+    ? chess.isDrawByFiftyMoves()
+    : (chess.isDraw() && !isStalemate && !isInsufficientMaterial && !isThreefoldRepetition);
   const isDraw = chess.isDraw();
-  // Fifty-move rule: a draw condition reported inside isDraw but not via a
-  // dedicated flag in chess.js v1 — we detect it by elimination.
-  const isFiftyMoveRule =
-    isDraw && !isStalemate && !isInsufficientMaterial && !isThreefoldRepetition;
 
   return {
     isCheck: chess.inCheck(),
