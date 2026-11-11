@@ -104,7 +104,7 @@ function sanitizeGame(game) {
     blackRemainingTime: game.blackRemainingTime,
     activeColor: game.activeColor,
     lastMoveTimestamp: game.lastMoveTimestamp,
-    gameStatus: game.gameStatus,
+    gameStatus: (game.gameStatus === 'active' || game.gameStatus === 'playing') ? 'playing' : game.gameStatus,
     result: game.result,
     drawOffer: game.drawOffer,
     rematchRequested: game.rematchRequested,
