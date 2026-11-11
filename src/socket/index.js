@@ -433,6 +433,11 @@ export function initSocketHandler(io) {
           increment,
         });
 
+        // Build the result payload (non-null only when the game is over)
+        const moveResult_gameResult = gameEnded && game.result?.winner
+          ? { winner: game.result.winner, condition: game.result.condition }
+          : null;
+
         io.to(session.lobbyId).emit('move-made', {
           move: {
             from: moveResult.from,
@@ -449,6 +454,8 @@ export function initSocketHandler(io) {
           whiteClock: game.whiteRemainingTime,
           blackClock: game.blackRemainingTime,
           activeColor: game.activeColor,
+          gameStatus: gameEnded ? 'completed' : 'playing',
+          result: moveResult_gameResult,
           game: sanitizeGame(game),
           status,
         });
@@ -456,15 +463,18 @@ export function initSocketHandler(io) {
         if (gameEnded) {
           clearTurnTimeout(session.lobbyId);
           await Lobby.findOneAndUpdate({ lobbyId: session.lobbyId }, { status: 'completed' });
-          io.to(session.lobbyId).emit('game-over', {
-            winner: game.result?.winner,
-            condition: game.result?.condition,
-            result: {
+          // Small delay to ensure move-made is processed first, then game-over confirms
+          setTimeout(() => {
+            io.to(session.lobbyId).emit('game-over', {
               winner: game.result?.winner,
               condition: game.result?.condition,
-            },
-            game: sanitizeGame(game),
-          });
+              result: {
+                winner: game.result?.winner,
+                condition: game.result?.condition,
+              },
+              game: sanitizeGame(game),
+            });
+          }, 100);
         } else {
           broadcastClockUpdate(io, session.lobbyId, game);
           scheduleTurnTimeout(io, session.lobbyId, game);
