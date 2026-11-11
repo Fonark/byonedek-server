@@ -21,6 +21,63 @@ const lobbyRooms = new Map();
 // Disconnect timers — to handle brief disconnects gracefully
 const disconnectTimers = new Map(); // socketId → timeout handle
 
+// Turn timers — fires when player's clock reaches 0
+const turnTimers = new Map(); // lobbyId → timeout handle
+
+export function clearTurnTimeout(lobbyId) {
+  if (turnTimers.has(lobbyId)) {
+    clearTimeout(turnTimers.get(lobbyId));
+    turnTimers.delete(lobbyId);
+  }
+}
+
+export function scheduleTurnTimeout(io, lobbyId, game) {
+  clearTurnTimeout(lobbyId);
+
+  if (!game || game.gameStatus !== 'playing') return;
+
+  const activeColor = game.activeColor; // 'w' or 'b'
+  let remainingMs = activeColor === 'w' ? game.whiteRemainingTime : game.blackRemainingTime;
+
+  if (remainingMs === null || remainingMs === undefined) return; // Unlimited time control
+
+  // If game has lastMoveTimestamp, deduct elapsed time
+  if (game.lastMoveTimestamp) {
+    const elapsed = Date.now() - new Date(game.lastMoveTimestamp).getTime();
+    remainingMs = Math.max(0, remainingMs - elapsed);
+  }
+
+  const losingColor = activeColor === 'w' ? 'white' : 'black';
+
+  if (remainingMs <= 0) {
+    triggerTimeout(io, lobbyId, game.gameId, losingColor);
+    return;
+  }
+
+  const timer = setTimeout(async () => {
+    await triggerTimeout(io, lobbyId, game.gameId, losingColor);
+  }, remainingMs);
+
+  turnTimers.set(lobbyId, timer);
+}
+
+async function triggerTimeout(io, lobbyId, gameId, losingColor) {
+  clearTurnTimeout(lobbyId);
+  try {
+    const updatedGame = await gameService.handleTimeout(gameId, losingColor);
+    io.to(lobbyId).emit('game-over', {
+      winner: updatedGame.result?.winner,
+      condition: 'timeout',
+      result: updatedGame.result,
+      game: sanitizeGame(updatedGame),
+    });
+    broadcastClockUpdate(io, lobbyId, updatedGame);
+    console.log(`[SOCKET] Game ${gameId} in lobby ${lobbyId} ended by timeout. Winner: ${updatedGame.result?.winner}`);
+  } catch (err) {
+    console.error(`[SOCKET] triggerTimeout error for game ${gameId}:`, err);
+  }
+}
+
 // ── Helper: broadcast clock state ─────────────────────────────────────────────
 export function broadcastClockUpdate(io, lobbyId, game) {
   io.to(lobbyId).emit('clock-updated', {
@@ -245,9 +302,10 @@ export function initSocketHandler(io) {
                 nickname: playerSlot.nickname,
               });
 
-              // If game was active, resume clock
-              if (game && game.gameStatus === 'active') {
+              // If game was active, resume clock & turn timer
+              if (game && (game.gameStatus === 'active' || game.gameStatus === 'playing')) {
                 broadcastClockUpdate(io, lobby.lobbyId, game);
+                scheduleTurnTimeout(io, lobby.lobbyId, game);
               }
 
               console.log(`[SOCKET] Reconnected: ${playerSlot.nickname} (${playerColor}) to ${lobby.lobbyId}`);
@@ -339,6 +397,7 @@ export function initSocketHandler(io) {
           io.to(lobbyId).emit('game-started', gameStartedData);
 
           broadcastClockUpdate(io, lobbyId, freshGame);
+          scheduleTurnTimeout(io, lobbyId, freshGame);
         }
 
         console.log(`[SOCKET] ${player.nickname} joined lobby ${lobbyId} as ${playerColor}`);
@@ -394,6 +453,7 @@ export function initSocketHandler(io) {
         });
 
         if (gameEnded) {
+          clearTurnTimeout(session.lobbyId);
           io.to(session.lobbyId).emit('game-over', {
             winner: game.result?.winner,
             condition: game.result?.condition,
@@ -402,6 +462,7 @@ export function initSocketHandler(io) {
           });
         } else {
           broadcastClockUpdate(io, session.lobbyId, game);
+          scheduleTurnTimeout(io, session.lobbyId, game);
         }
       } catch (err) {
         console.error('[SOCKET] make-move error:', err);
@@ -418,6 +479,7 @@ export function initSocketHandler(io) {
           return;
         }
 
+        clearTurnTimeout(session.lobbyId);
         const game = await gameService.resignGame(
           session.gameId || data?.gameId,
           session.color
@@ -460,6 +522,7 @@ export function initSocketHandler(io) {
         const session = activeConnections.get(socket.id);
         if (!session) return;
 
+        clearTurnTimeout(session.lobbyId);
         const game = await gameService.acceptDraw(session.gameId || data?.gameId);
 
         io.to(session.lobbyId).emit('game-over', {
@@ -571,10 +634,42 @@ export function initSocketHandler(io) {
           }
 
           broadcastClockUpdate(io, session.lobbyId, freshGame);
+          scheduleTurnTimeout(io, session.lobbyId, freshGame);
         }
       } catch (err) {
         console.error('[SOCKET] request-rematch error:', err);
         socket.emit('error', { message: err.message || 'Failed to request rematch' });
+      }
+    });
+
+    // ── CLAIM TIMEOUT ─────────────────────────────────────────────────────────
+    socket.on('claim-timeout', async (data) => {
+      try {
+        const session = activeConnections.get(socket.id);
+        const lobbyId = session?.lobbyId || data?.lobbyId;
+        const gameId = session?.gameId || data?.gameId;
+        if (!lobbyId || !gameId) return;
+
+        const game = await gameService.getGame(gameId);
+        if (!game || game.gameStatus !== 'playing') return;
+
+        const activeColor = game.activeColor;
+        const losingColor = activeColor === 'w' ? 'white' : 'black';
+        let remainingMs = activeColor === 'w' ? game.whiteRemainingTime : game.blackRemainingTime;
+
+        if (remainingMs === null || remainingMs === undefined) return; // Unlimited
+
+        if (game.lastMoveTimestamp) {
+          const elapsed = Date.now() - new Date(game.lastMoveTimestamp).getTime();
+          remainingMs -= elapsed;
+        }
+
+        // Allow up to 1.5s tolerance for network latency
+        if (remainingMs <= 1500) {
+          await triggerTimeout(io, lobbyId, gameId, losingColor);
+        }
+      } catch (err) {
+        console.error('[SOCKET] claim-timeout error:', err);
       }
     });
 
