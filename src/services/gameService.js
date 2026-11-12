@@ -37,6 +37,7 @@ export async function createGame({ lobbyId, timeControl }) {
     gameStatus: 'waiting',
     result: { winner: null, condition: null },
     drawOffer: { offeredBy: null, timestamp: null },
+    takebackOffer: { offeredBy: null, timestamp: null },
     rematchRequested: { byWhite: false, byBlack: false },
     createdAt: new Date(),
     completedAt: null,
@@ -159,6 +160,8 @@ export async function processMove({ gameId, move, playerColor, increment = 0 }) 
     move: moveResult.from + moveResult.to + (moveResult.promotion || ''),
     san: moveResult.san,
     fen: newFen,
+    whiteRemainingTime: game.whiteRemainingTime,
+    blackRemainingTime: game.blackRemainingTime,
     timestamp: now,
   });
 
@@ -166,6 +169,7 @@ export async function processMove({ gameId, move, playerColor, increment = 0 }) 
   game.pgn = newPgn;
   game.activeColor = chess.turn();
   game.lastMoveTimestamp = now;
+  game.takebackOffer = { offeredBy: null, timestamp: null };
 
   // ── Check for game-ending conditions ──────────────────────────────────────
   const status = getGameStatus(chess);
@@ -302,6 +306,105 @@ export async function declineDraw(gameId) {
     { new: true }
   );
   if (!game) throw Object.assign(new Error('Game not found'), { status: 404 });
+  return game;
+}
+
+// ─── Takeback ─────────────────────────────────────────────────────────────────
+
+/**
+ * Records a takeback offer from a player.
+ * @param {string} gameId
+ * @param {'white'|'black'} playerColor
+ * @returns {object} Updated game document.
+ */
+export async function offerTakeback(gameId, playerColor) {
+  const game = await Game.findOne({ gameId });
+  if (!game) throw Object.assign(new Error('Game not found'), { status: 404 });
+  if (!game.moveHistory || game.moveHistory.length === 0) {
+    throw Object.assign(new Error('No moves to take back'), { status: 400 });
+  }
+
+  game.takebackOffer = { offeredBy: playerColor, timestamp: new Date() };
+  await game.save();
+  return game;
+}
+
+/**
+ * Declines a takeback offer, clearing the pending offer.
+ * @param {string} gameId
+ * @returns {object} Updated game document.
+ */
+export async function declineTakeback(gameId) {
+  const game = await Game.findOneAndUpdate(
+    { gameId },
+    { takebackOffer: { offeredBy: null, timestamp: null } },
+    { new: true }
+  );
+  if (!game) throw Object.assign(new Error('Game not found'), { status: 404 });
+  return game;
+}
+
+/**
+ * Accepts a takeback offer and rolls back the move history (Lichess style).
+ * If requester just moved (currently opponent's turn), rolls back 1 half-move.
+ * If requester is already on their turn (opponent already replied), rolls back 2 half-moves.
+ * @param {string} gameId
+ * @returns {object} Updated game document.
+ */
+export async function acceptTakeback(gameId) {
+  const game = await Game.findOne({ gameId });
+  if (!game) throw Object.assign(new Error('Game not found'), { status: 404 });
+  if (!game.moveHistory || game.moveHistory.length === 0) {
+    throw Object.assign(new Error('No moves to take back'), { status: 400 });
+  }
+
+  const requesterColor = game.takebackOffer?.offeredBy; // 'white' or 'black'
+  const currentTurnColor = game.activeColor === 'w' ? 'white' : 'black';
+
+  // If requester just moved (it is currently opponent's turn), undo 1 half-move.
+  // If requester is already on their turn (opponent already responded), undo 2 half-moves so requester can replay their turn.
+  let movesToUndo = 1;
+  if (requesterColor && requesterColor === currentTurnColor) {
+    movesToUndo = Math.min(2, game.moveHistory.length);
+  } else {
+    movesToUndo = Math.min(1, game.moveHistory.length);
+  }
+
+  for (let i = 0; i < movesToUndo; i++) {
+    game.moveHistory.pop();
+  }
+
+  // Clear takeback offer
+  game.takebackOffer = { offeredBy: null, timestamp: null };
+
+  // Reconstruct position and PGN by replaying remaining move history
+  const chess = new Chess();
+  for (const entry of game.moveHistory) {
+    chess.move(entry.san || entry.move);
+  }
+
+  game.fen = chess.fen();
+  game.pgn = chess.pgn();
+  game.activeColor = chess.turn();
+  game.lastMoveTimestamp = new Date();
+
+  // If game was completed (e.g. accidental checkmate), restore it to active
+  game.gameStatus = 'active';
+  game.result = { winner: null, condition: null };
+  game.completedAt = null;
+
+  // Restore clocks if available from the target move history entry
+  if (game.moveHistory.length > 0) {
+    const targetEntry = game.moveHistory[game.moveHistory.length - 1];
+    if (targetEntry.whiteRemainingTime != null) {
+      game.whiteRemainingTime = targetEntry.whiteRemainingTime;
+    }
+    if (targetEntry.blackRemainingTime != null) {
+      game.blackRemainingTime = targetEntry.blackRemainingTime;
+    }
+  }
+
+  await game.save();
   return game;
 }
 

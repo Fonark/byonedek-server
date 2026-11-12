@@ -8,6 +8,8 @@ const moveEntrySchema = new Schema(
     move: { type: String },
     san: { type: String },
     fen: { type: String },
+    whiteRemainingTime: { type: Number, default: null },
+    blackRemainingTime: { type: Number, default: null },
     timestamp: { type: Date, default: Date.now },
   },
   { _id: false }
@@ -42,6 +44,19 @@ const resultSchema = new Schema(
 
 // ─── Sub-schema: Draw Offer ───────────────────────────────────────────────────
 const drawOfferSchema = new Schema(
+  {
+    offeredBy: {
+      type: String,
+      enum: ['white', 'black', null],
+      default: null,
+    },
+    timestamp: { type: Date, default: null },
+  },
+  { _id: false }
+);
+
+// ─── Sub-schema: Takeback Offer ───────────────────────────────────────────────
+const takebackOfferSchema = new Schema(
   {
     offeredBy: {
       type: String,
@@ -97,6 +112,7 @@ const gameSchema = new Schema(
     },
     result: { type: resultSchema, default: () => ({}) },
     drawOffer: { type: drawOfferSchema, default: () => ({}) },
+    takebackOffer: { type: takebackOfferSchema, default: () => ({}) },
     rematchRequested: { type: rematchSchema, default: () => ({}) },
     createdAt: { type: Date, default: Date.now },
     completedAt: { type: Date, default: null },

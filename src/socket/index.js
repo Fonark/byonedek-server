@@ -107,8 +107,18 @@ function sanitizeGame(game) {
     gameStatus: (game.gameStatus === 'active' || game.gameStatus === 'playing') ? 'playing' : game.gameStatus,
     result: game.result,
     drawOffer: game.drawOffer,
+    takebackOffer: game.takebackOffer,
     rematchRequested: game.rematchRequested,
   };
+}
+
+function getLastMoveFromHistory(history) {
+  if (!history || history.length === 0) return null;
+  const last = history[history.length - 1];
+  if (last.move && last.move.length >= 4) {
+    return { from: last.move.slice(0, 2), to: last.move.slice(2, 4) };
+  }
+  return null;
 }
 
 // ── Helper: get sanitized lobby state for clients ──────────────────────────────
@@ -571,6 +581,79 @@ export function initSocketHandler(io) {
       } catch (err) {
         console.error('[SOCKET] decline-draw error:', err);
         socket.emit('error', { message: err.message || 'Failed to decline draw' });
+      }
+    });
+
+    // ── OFFER TAKEBACK (Lichess style) ────────────────────────────────────────
+    socket.on('offer-takeback', async (data) => {
+      try {
+        const session = activeConnections.get(socket.id);
+        if (!session) return;
+
+        const game = await gameService.offerTakeback(
+          session.gameId || data?.gameId,
+          session.color
+        );
+
+        io.to(session.lobbyId).emit('takeback-offered', {
+          offeredBy: session.color,
+          game: sanitizeGame(game),
+        });
+      } catch (err) {
+        console.error('[SOCKET] offer-takeback error:', err);
+        socket.emit('error', { message: err.message || 'Failed to offer takeback' });
+      }
+    });
+
+    // ── ACCEPT TAKEBACK (Lichess style) ───────────────────────────────────────
+    socket.on('accept-takeback', async (data) => {
+      try {
+        const session = activeConnections.get(socket.id);
+        if (!session) return;
+
+        clearTurnTimeout(session.lobbyId);
+        const game = await gameService.acceptTakeback(session.gameId || data?.gameId);
+        await Lobby.findOneAndUpdate({ lobbyId: session.lobbyId }, { status: 'playing' });
+
+        const lastMove = getLastMoveFromHistory(game.moveHistory);
+
+        // Reschedule timeout for the restored active color
+        scheduleTurnTimeout(io, session.lobbyId, game);
+
+        io.to(session.lobbyId).emit('takeback-accepted', {
+          game: sanitizeGame(game),
+          fen: game.fen,
+          moveHistory: game.moveHistory,
+          lastMove,
+          activeColor: game.activeColor,
+          whiteClock: game.whiteRemainingTime,
+          blackClock: game.blackRemainingTime,
+          whiteRemainingTime: game.whiteRemainingTime,
+          blackRemainingTime: game.blackRemainingTime,
+        });
+
+        broadcastClockUpdate(io, session.lobbyId, game);
+      } catch (err) {
+        console.error('[SOCKET] accept-takeback error:', err);
+        socket.emit('error', { message: err.message || 'Failed to accept takeback' });
+      }
+    });
+
+    // ── DECLINE TAKEBACK (Lichess style) ──────────────────────────────────────
+    socket.on('decline-takeback', async (data) => {
+      try {
+        const session = activeConnections.get(socket.id);
+        if (!session) return;
+
+        const game = await gameService.declineTakeback(session.gameId || data?.gameId);
+
+        io.to(session.lobbyId).emit('takeback-declined', {
+          declinedBy: session.color,
+          game: sanitizeGame(game),
+        });
+      } catch (err) {
+        console.error('[SOCKET] decline-takeback error:', err);
+        socket.emit('error', { message: err.message || 'Failed to decline takeback' });
       }
     });
 
