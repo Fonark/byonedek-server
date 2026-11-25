@@ -539,6 +539,15 @@ export function initSocketHandler(io) {
           return;
         }
 
+        // Safety net: cancel any pending disconnect timer for this player
+        // (protects against race condition where timer wasn't cancelled during reconnect)
+        const timerKey = `${session.lobbyId}_${session.color}`;
+        if (disconnectTimers.has(timerKey)) {
+          clearTimeout(disconnectTimers.get(timerKey));
+          disconnectTimers.delete(timerKey);
+          console.log(`[SOCKET] Cancelled stale disconnect timer for ${session.nickname} on make-move`);
+        }
+
         // Get increment from lobby time control
         const lobby = await getLobby(session.lobbyId || lobbyId);
         const increment = lobby && lobby.timeControl && !lobby.timeControl.isUnlimited
