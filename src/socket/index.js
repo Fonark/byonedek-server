@@ -8,6 +8,7 @@ import * as lobbyService from '../services/lobbyService.js';
 import * as gameService from '../services/gameService.js';
 import { getLobby } from '../services/lobbyService.js';
 import { getActiveGameByLobbyId } from '../services/gameService.js';
+import { generateReconnectToken } from '../utils/generateId.js';
 import Lobby from '../models/Lobby.js';
 import Game from '../models/Game.js';
 
@@ -324,6 +325,105 @@ export function initSocketHandler(io) {
             }
           }
           // Token invalid or belongs to another lobby — fall through to normal join
+        }
+
+        // ── Fallback reconnect: token invalid tapi lobby sedang 'playing' ───
+        // Ini terjadi saat server restart (token hilang dari DB) atau token tidak cocok.
+        // Coba cari player berdasarkan nickname di lobby yang sedang bermain.
+        {
+          const lobbyCheck = await Lobby.findOne({ lobbyId });
+          if (lobbyCheck && (lobbyCheck.status === 'playing' || lobbyCheck.status === 'active')) {
+            const whiteNick = lobbyCheck.whitePlayer?.nickname;
+            const blackNick = lobbyCheck.blackPlayer?.nickname;
+            const matchWhite = whiteNick && whiteNick.toLowerCase() === (nickname || '').toLowerCase();
+            const matchBlack = blackNick && blackNick.toLowerCase() === (nickname || '').toLowerCase();
+
+            if (matchWhite || matchBlack) {
+              const playerColor = matchWhite ? 'white' : 'black';
+              const colorField = matchWhite ? 'whitePlayer.socketId' : 'blackPlayer.socketId';
+              const playerSlot = matchWhite ? lobbyCheck.whitePlayer : lobbyCheck.blackPlayer;
+
+              // Cancel pending abandon timer if any
+              const timerKey = `${lobbyCheck.lobbyId}_${playerColor}`;
+              if (disconnectTimers.has(timerKey)) {
+                clearTimeout(disconnectTimers.get(timerKey));
+                disconnectTimers.delete(timerKey);
+              }
+
+              // Update socketId
+              await Lobby.findOneAndUpdate(
+                { lobbyId: lobbyCheck.lobbyId },
+                { [colorField]: socket.id }
+              );
+
+              const game = await getActiveGameByLobbyId(lobbyCheck.lobbyId);
+
+              // Reuse existing token or generate a fresh one for this fallback reconnect
+              const existingToken = playerSlot.reconnectToken || generateReconnectToken();
+              if (!playerSlot.reconnectToken) {
+                const tokenField = matchWhite ? 'whitePlayer.reconnectToken' : 'blackPlayer.reconnectToken';
+                await Lobby.findOneAndUpdate({ lobbyId }, { [tokenField]: existingToken });
+              }
+
+              activeConnections.set(socket.id, {
+                playerId: playerSlot.playerId || `fallback_${Date.now()}`,
+                lobbyId: lobbyCheck.lobbyId,
+                gameId: game ? game.gameId : null,
+                color: playerColor,
+                reconnectToken: existingToken,
+                nickname: playerSlot.nickname,
+              });
+
+              if (!lobbyRooms.has(lobbyCheck.lobbyId)) {
+                lobbyRooms.set(lobbyCheck.lobbyId, new Set());
+              }
+              lobbyRooms.get(lobbyCheck.lobbyId).add(socket.id);
+              socket.join(lobbyCheck.lobbyId);
+
+              const effectiveStatus = lobbyCheck.status === 'abandoned' ? 'waiting' : lobbyCheck.status;
+              const effectiveGameStatus = game ? game.gameStatus : effectiveStatus;
+
+              const reconPayload = {
+                lobbyId: lobbyCheck.lobbyId,
+                gameId: game ? game.gameId : null,
+                color: playerColor,
+                playerColor,
+                reconnectToken: existingToken,
+                status: effectiveStatus,
+                gameStatus: effectiveGameStatus,
+                fen: game ? game.fen : null,
+                whiteClock: game ? game.whiteRemainingTime : null,
+                blackClock: game ? game.blackRemainingTime : null,
+                activeColor: game ? game.activeColor : 'w',
+                moveHistory: game ? game.moveHistory : [],
+                lobby: sanitizeLobby(lobbyCheck),
+                game: game ? sanitizeGame(game) : null,
+                whitePlayer: lobbyCheck.whitePlayer,
+                blackPlayer: lobbyCheck.blackPlayer,
+              };
+
+              socket.emit('reconnected', reconPayload);
+              if (typeof callback === 'function') callback(reconPayload);
+
+              socket.to(lobbyCheck.lobbyId).emit('player-reconnected', {
+                color: playerColor,
+                nickname: playerSlot.nickname,
+              });
+
+              if (game && (game.gameStatus === 'active' || game.gameStatus === 'playing')) {
+                broadcastClockUpdate(io, lobbyCheck.lobbyId, game);
+                scheduleTurnTimeout(io, lobbyCheck.lobbyId, game);
+              }
+
+              console.log(`[SOCKET] Fallback reconnect: ${playerSlot.nickname} (${playerColor}) to ${lobbyCheck.lobbyId}`);
+              return;
+            }
+
+            // Lobby is playing but this nickname is not a known player — reject silently
+            socket.emit('error', { message: 'Game already in progress. You are not a player in this lobby.' });
+            if (typeof callback === 'function') callback({ error: 'Game already in progress' });
+            return;
+          }
         }
 
         // ── Normal join path ─────────────────────────────────────────────────
