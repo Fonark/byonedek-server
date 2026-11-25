@@ -266,7 +266,15 @@ export function initSocketHandler(io) {
                 { [colorField]: socket.id }
               );
 
-              const game = await getActiveGameByLobbyId(lobby.lobbyId);
+              // Try active game first; if not found, fall back to ANY latest game
+              // (covers cases where game ended by timeout/completion during disconnect)
+              let game = await getActiveGameByLobbyId(lobby.lobbyId);
+              if (!game) {
+                game = await gameService.getGameByLobbyId(lobby.lobbyId);
+                console.log(`[SOCKET] Active game not found, using latest game (status: ${game?.gameStatus}) for lobby ${lobby.lobbyId}`);
+              } else {
+                console.log(`[SOCKET] Active game found (status: ${game.gameStatus}) for lobby ${lobby.lobbyId}`);
+              }
 
               activeConnections.set(socket.id, {
                 playerId: playerSlot.playerId,
@@ -356,7 +364,8 @@ export function initSocketHandler(io) {
                 { [colorField]: socket.id }
               );
 
-              const game = await getActiveGameByLobbyId(lobbyCheck.lobbyId);
+              const game = await getActiveGameByLobbyId(lobbyCheck.lobbyId)
+                ?? await gameService.getGameByLobbyId(lobbyCheck.lobbyId);
 
               // Reuse existing token or generate a fresh one for this fallback reconnect
               const existingToken = playerSlot.reconnectToken || generateReconnectToken();
