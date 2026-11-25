@@ -20,7 +20,6 @@ const activeConnections = new Map();
 const lobbyRooms = new Map();
 
 // Disconnect timers — to handle brief disconnects gracefully
-const disconnectTimers = new Map(); // socketId → timeout handle
 
 // Turn timers — fires when player's clock reaches 0
 const turnTimers = new Map(); // lobbyId → timeout handle
@@ -253,13 +252,6 @@ export function initSocketHandler(io) {
               const colorField = isWhite ? 'whitePlayer.socketId' : 'blackPlayer.socketId';
               const playerSlot = isWhite ? lobby.whitePlayer : lobby.blackPlayer;
 
-              // Cancel pending abandon timer
-              const timerKey = `${lobby.lobbyId}_${playerColor}`;
-              if (disconnectTimers.has(timerKey)) {
-                clearTimeout(disconnectTimers.get(timerKey));
-                disconnectTimers.delete(timerKey);
-              }
-
               // Update socketId
               await Lobby.findOneAndUpdate(
                 { lobbyId: lobby.lobbyId },
@@ -350,13 +342,6 @@ export function initSocketHandler(io) {
               const playerColor = matchWhite ? 'white' : 'black';
               const colorField = matchWhite ? 'whitePlayer.socketId' : 'blackPlayer.socketId';
               const playerSlot = matchWhite ? lobbyCheck.whitePlayer : lobbyCheck.blackPlayer;
-
-              // Cancel pending abandon timer if any
-              const timerKey = `${lobbyCheck.lobbyId}_${playerColor}`;
-              if (disconnectTimers.has(timerKey)) {
-                clearTimeout(disconnectTimers.get(timerKey));
-                disconnectTimers.delete(timerKey);
-              }
 
               // Update socketId
               await Lobby.findOneAndUpdate(
@@ -537,15 +522,6 @@ export function initSocketHandler(io) {
         if (!session) {
           socket.emit('error', { message: 'Not authenticated' });
           return;
-        }
-
-        // Safety net: cancel any pending disconnect timer for this player
-        // (protects against race condition where timer wasn't cancelled during reconnect)
-        const timerKey = `${session.lobbyId}_${session.color}`;
-        if (disconnectTimers.has(timerKey)) {
-          clearTimeout(disconnectTimers.get(timerKey));
-          disconnectTimers.delete(timerKey);
-          console.log(`[SOCKET] Cancelled stale disconnect timer for ${session.nickname} on make-move`);
         }
 
         // Get increment from lobby time control
@@ -911,34 +887,6 @@ export function initSocketHandler(io) {
 
         // Notify opponent
         socket.to(lobbyId).emit('player-disconnected', { color, nickname });
-
-        // Set timeout to abandon game if player doesn't reconnect
-        const timer = setTimeout(async () => {
-          try {
-            const lobby = await getLobby(lobbyId);
-            if (!lobby) return;
-
-            const game = await gameService.getGameByLobbyId(lobbyId);
-            if (game && (game.gameStatus === 'active' || game.gameStatus === 'playing')) {
-              // Forfeit the disconnected player
-              const updatedGame = await gameService.resignGame(game.gameId, color);
-              await Lobby.findOneAndUpdate({ lobbyId }, { status: 'completed' });
-              io.to(lobbyId).emit('game-over', {
-                winner: updatedGame.result?.winner,
-                condition: updatedGame.result?.condition,
-                result: { ...updatedGame.result, reason: 'disconnect' },
-                game: sanitizeGame(updatedGame),
-              });
-            } else {
-              await Lobby.findOneAndUpdate({ lobbyId }, { status: 'abandoned' });
-            }
-          } catch (err) {
-            console.error('[SOCKET] disconnect cleanup error:', err);
-          }
-        }, 30000); // 30-second grace period
-
-        const timerKey = `${lobbyId}_${color}`;
-        disconnectTimers.set(timerKey, timer);
 
         // Remove from active connections (but keep in DB for reconnect)
         activeConnections.delete(socket.id);
