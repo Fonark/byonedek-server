@@ -74,7 +74,7 @@ export async function getGameByLobbyId(lobbyId) {
  * @returns {object|null}
  */
 export async function getActiveGameByLobbyId(lobbyId) {
-  return Game.findOne({ lobbyId, gameStatus: { $in: ['waiting', 'active'] } }).sort({ createdAt: -1 });
+  return Game.findOne({ lobbyId, gameStatus: { $in: ['waiting', 'active', 'playing'] } }).sort({ createdAt: -1 });
 }
 
 // ─── Move Processing ──────────────────────────────────────────────────────────
@@ -90,7 +90,7 @@ export async function processMove({ gameId, move, playerColor, increment = 0 }) 
   if (!game) {
     throw Object.assign(new Error('Game not found'), { status: 404 });
   }
-  if (game.gameStatus !== 'active') {
+  if (game.gameStatus !== 'active' && game.gameStatus !== 'playing') {
     throw Object.assign(new Error('Game is not active'), { status: 409 });
   }
 
@@ -221,7 +221,7 @@ export async function processMove({ gameId, move, playerColor, increment = 0 }) 
 export async function resignGame(gameId, playerColor) {
   const winner = playerColor === 'white' ? 'black' : 'white';
   const game = await Game.findOneAndUpdate(
-    { gameId, gameStatus: { $in: ['active', 'waiting'] } },
+    { gameId, gameStatus: { $in: ['active', 'playing', 'waiting'] } },
     {
       gameStatus: 'completed',
       result: { winner, condition: 'resignation' },
@@ -244,7 +244,7 @@ export async function resignGame(gameId, playerColor) {
 export async function handleTimeout(gameId, losingColor) {
   const winner = losingColor === 'white' ? 'black' : 'white';
   const game = await Game.findOneAndUpdate(
-    { gameId, gameStatus: { $in: ['active', 'waiting'] } },
+    { gameId, gameStatus: { $in: ['active', 'playing', 'waiting'] } },
     {
       gameStatus: 'completed',
       result: { winner, condition: 'timeout' },
@@ -281,7 +281,7 @@ export async function offerDraw(gameId, playerColor) {
  */
 export async function acceptDraw(gameId) {
   const game = await Game.findOneAndUpdate(
-    { gameId, gameStatus: { $in: ['active', 'waiting'] } },
+    { gameId, gameStatus: { $in: ['active', 'playing', 'waiting'] } },
     {
       gameStatus: 'completed',
       result: { winner: 'draw', condition: 'draw-agreement' },
